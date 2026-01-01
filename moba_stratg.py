@@ -16,7 +16,7 @@ st.set_page_config(
 )
 
 # ==========================================
-# DATABASE 1: DRAFTING & HEROES (Pre-Game)
+# DATABASE 1: DRAFTING & HEROES (For Pre-Game)
 # ==========================================
 HERO_DATABASE = {
     "Terizla": {"role": "Fighter", "lane": "Exp Lane", "specialty": "Burst/CC", "counters": ["Cici", "X.Borg", "Dyrroth"], "stats": {"win": 54.2}},
@@ -66,33 +66,31 @@ MPL_DRAFTS = {
 # ==========================================
 # DATABASE 2: BEHAVIORAL DATA (Post-Game)
 # ==========================================
+# Updated schema to match MLBB screenshot statistics
 MPL_MATCH_STATS = {
     "SRG vs HomeBois (High Synergy)": {
         "team_name": "Selangor Red Giants",
         "kills": 28, "deaths": 10, "assists": 65, "gold_diff": 8500,
-        "chat_density": 85,        
-        "avg_distance": 6.5,       
-        "role_balance_score": 92,  
-        "obj_timing_score": 88,    
-        "sync_score": 90           
+        "chat_density": 85,
+        "tf_participation": 78,    # Replaces sync_score
+        "turret_damage": 25000,    # Replaces obj_timing_score
+        "cc_score": 65             # Replaces role_balance_score
     },
-    "Todak vs SMG (Strategic/Split)": {
+    "Todak vs SMG (Split Push)": {
         "team_name": "Todak",
         "kills": 15, "deaths": 12, "assists": 30, "gold_diff": 4200,
-        "chat_density": 60,        
-        "avg_distance": 12.0,      
-        "role_balance_score": 85,
-        "obj_timing_score": 95,    
-        "sync_score": 70
+        "chat_density": 60,
+        "tf_participation": 45,    # Lower due to split push
+        "turret_damage": 32000,    # High objective damage
+        "cc_score": 40
     },
     "Team HAQ vs JP Niners (Defensive)": {
         "team_name": "Team HAQ",
         "kills": 10, "deaths": 25, "assists": 20, "gold_diff": -5000,
-        "chat_density": 30,        
-        "avg_distance": 9.0,
-        "role_balance_score": 75,
-        "obj_timing_score": 40,    
-        "sync_score": 45           
+        "chat_density": 30,
+        "tf_participation": 40,
+        "turret_damage": 8000,
+        "cc_score": 35
     }
 }
 
@@ -127,21 +125,27 @@ def analyze_lane_matchups(enemy_lanes):
     return recs
 
 def calculate_ci_score(stats):
-    weights = {'chat': 0.25, 'dist': 0.20, 'role': 0.20, 'obj': 0.20, 'sync': 0.15}
-    norm_dist = max(0, 100 - (stats['avg_distance'] * 5)) 
+    """
+    Calculates CI Score using MLBB specific metrics.
+    weights: Chat(25%), Teamfight Part(25%), Turret Dmg(25%), CC(25%)
+    """
+    weights = {'chat': 0.25, 'tf': 0.25, 'obj': 0.25, 'cc': 0.25}
+    
+    # Normalize Turret Damage (Cap at 30k for 100 points)
+    norm_obj = min(100, (stats['turret_damage'] / 30000) * 100)
+    
+    # Normalize CC Score (Cap at 80% avg for 100 points)
+    norm_cc = min(100, (stats['cc_score'] / 80) * 100)
+
     score = (
         stats['chat_density'] * weights['chat'] +
-        norm_dist * weights['dist'] +
-        stats['role_balance_score'] * weights['role'] +
-        stats['obj_timing_score'] * weights['obj'] +
-        stats['sync_score'] * weights['sync']
+        stats['tf_participation'] * weights['tf'] +
+        norm_obj * weights['obj'] +
+        norm_cc * weights['cc']
     )
     return round(score, 2)
 
 def get_ci_based_recommendations(score):
-    """
-    Generates granular recommendations based on 5 CI Score Tiers.
-    """
     recs = []
     if score < 20:
         recs = [
@@ -181,23 +185,21 @@ def get_ci_based_recommendations(score):
     return recs
 
 def get_diagnostic_insights(stats):
-    """Generates specific behavioral diagnostics."""
     weaknesses = []
     if stats['chat_density'] < 40: weaknesses.append("Silent Gameplay (Low Comm)")
-    if stats['avg_distance'] > 15: weaknesses.append("Team Isolation (High Distance)")
-    if stats['sync_score'] < 50: weaknesses.append("Desynchronized Teamfights")
-    if stats['obj_timing_score'] < 50: weaknesses.append("Late Objective Rotations")
+    if stats['tf_participation'] < 50: weaknesses.append("Desynchronized Teamfights (Low Participation)")
+    if stats['turret_damage'] < 10000: weaknesses.append("Passive Macro (Low Turret Damage)")
+    if stats['cc_score'] < 30: weaknesses.append("Lack of Control (Low CC Score)")
     
     root_cause = "Individual Mechanics"
     if len(weaknesses) >= 2: root_cause = "Systemic Coordination Failure"
-    elif stats['role_balance_score'] < 60: root_cause = "Draft/Role Gap"
     
     return weaknesses, root_cause
 
 @st.cache_resource
 def train_dummy_model():
     clf = RandomForestClassifier(n_estimators=10, random_state=42)
-    X = np.random.rand(20, 5) 
+    X = np.random.rand(20, 4) # Updated to 4 features
     y = np.random.randint(0, 2, 20)
     clf.fit(X, y)
     return clf
@@ -240,9 +242,9 @@ if app_mode == "📊 Post-Game Analysis (Pipeline)":
     # STAGE 1: DATA INGESTION
     if st.session_state.stage == 1:
         st.header("Stage 1: Data Ingestion")
-        st.markdown("Collect match logs, timestamps, and coordinates.")
+        st.markdown("Collect match logs and statistics from Mobile Legends post-game screen.")
         
-        tab_db, tab_custom = st.tabs(["MPL MY Stats DB", "Custom Behavioral Input"])
+        tab_db, tab_custom = st.tabs(["MPL MY Stats DB", "Custom Match Input"])
         
         with tab_db:
             match = st.selectbox("Select Played Match:", ["Select..."] + list(MPL_MATCH_STATS.keys()))
@@ -254,27 +256,37 @@ if app_mode == "📊 Post-Game Analysis (Pipeline)":
                     
         with tab_custom:
             with st.form("behav_input"):
-                st.subheader("Match Performance Stats")
+                st.subheader("📋 Match Performance Stats")
                 c_stats1, c_stats2 = st.columns(2)
-                kills = c_stats1.number_input("Kills", 0, 100, 20)
-                deaths = c_stats2.number_input("Deaths", 0, 100, 20)
-                assists = c_stats1.number_input("Assists", 0, 200, 40)
-                gold = c_stats2.number_input("Gold Diff", -20000, 20000, 2000)
+                kills = c_stats1.number_input("Total Kills", 0, 100, 30)
+                deaths = c_stats2.number_input("Total Deaths", 0, 100, 13)
+                assists = c_stats1.number_input("Total Assists", 0, 200, 45)
+                gold = c_stats2.number_input("Gold Diff", -20000, 20000, 8000)
 
-                st.subheader("Behavioral Metrics")
+                st.markdown("---")
+                st.subheader("🧠 Behavioral & CI Metrics (From Stats)")
+                
                 c1, c2 = st.columns(2)
-                chat = c1.slider("Chat Density (0-100)", 0, 100, 50)
-                dist = c1.slider("Avg Distance (Units)", 0.0, 20.0, 10.0)
-                role = c2.slider("Role Balance Score", 0, 100, 70)
-                obj = c2.slider("Objective Timing Score", 0, 100, 60)
-                sync = st.slider("Teamfight Sync Score", 0, 100, 50)
+                # Teamfight Participation: Replaces Synchronization Score
+                tf_part = c1.slider("Avg Teamfight Participation (%)", 0, 100, 55, help="Avg of the 'Teamfight Participation' column from post-game.")
+                
+                # Turret Damage: Replaces Objective Score
+                turret_dmg = c2.number_input("Total Turret Damage", 0, 100000, 20000, help="Sum of 'Turret Damage' from all teammates.")
+                
+                # CC Score: Replaces Role Balance
+                cc_score = c1.slider("Avg Crowd Control (%)", 0, 100, 40, help="Avg of 'Crowd Control' percentage.")
+                
+                # Chat Density: Soft Skill
+                chat = c2.slider("Chat Density (0-100)", 0, 100, 50, help="Estimated communication frequency.")
                 
                 if st.form_submit_button("Process Data"):
                     st.session_state.match_stats = {
                         "team_name": "Custom Team", 
                         "kills": kills, "deaths": deaths, "assists": assists, "gold_diff": gold,
-                        "chat_density": chat, "avg_distance": dist, "role_balance_score": role,
-                        "obj_timing_score": obj, "sync_score": sync
+                        "chat_density": chat, 
+                        "tf_participation": tf_part,
+                        "turret_damage": turret_dmg,
+                        "cc_score": cc_score
                     }
                     st.session_state.stage = 2
                     st.rerun()
@@ -282,22 +294,22 @@ if app_mode == "📊 Post-Game Analysis (Pipeline)":
     # STAGE 2: PRE-PROCESSING
     elif st.session_state.stage == 2:
         st.header("Stage 2: Data Pre-Processing")
-        with st.spinner("Normalizing time-series... Aligning logs..."):
+        with st.spinner("Normalizing stat metrics... Aligning logs..."):
             time.sleep(0.8)
-        st.success("✅ Data Cleaned: Null values removed, Coordinates normalized.")
+        st.success("✅ Data Cleaned: Stats normalized to standard CI scale.")
         st.dataframe(pd.DataFrame([st.session_state.match_stats]), use_container_width=True)
         if st.button("Extract Features"): st.session_state.stage = 3; st.rerun()
 
     # STAGE 3: FEATURE EXTRACTION
     elif st.session_state.stage == 3:
         st.header("Stage 3: Teamwork Feature Extraction")
-        st.info("Transforming raw stats into CI Indicators.")
+        st.info("Transforming raw MLBB stats into CI Indicators.")
         stats = st.session_state.match_stats
         
         c1, c2, c3 = st.columns(3)
         c1.metric("Comm Density", stats['chat_density'])
-        c2.metric("Coop Movement", f"{stats['avg_distance']}u")
-        c3.metric("Fight Sync", stats['sync_score'])
+        c2.metric("Sync Score", f"{stats['tf_participation']}%")
+        c3.metric("Macro Control", f"{stats['turret_damage']:,}")
         
         if st.button("Calculate CI Score"): st.session_state.stage = 4; st.rerun()
 
@@ -337,7 +349,6 @@ if app_mode == "📊 Post-Game Analysis (Pipeline)":
         weaknesses, root_cause = get_diagnostic_insights(stats)
         score_recs = get_ci_based_recommendations(ci_score)
         
-        # Store for Stage 7
         st.session_state.diagnostics = {"weaknesses": weaknesses, "root_cause": root_cause, "recs": score_recs}
 
         c1, c2 = st.columns(2)
@@ -371,9 +382,13 @@ if app_mode == "📊 Post-Game Analysis (Pipeline)":
         
         with c1:
             st.markdown("### 📈 CI Performance Radar")
+            # Normalize Turret Dmg for Chart
+            norm_turret = min(100, (stats['turret_damage']/30000)*100)
+            norm_cc = min(100, (stats['cc_score']/80)*100)
+            
             chart_data = pd.DataFrame({
-                "Metric": ["Chat", "Role", "Obj", "Sync", "Movement"],
-                "Score": [stats['chat_density'], stats['role_balance_score'], stats['obj_timing_score'], stats['sync_score'], max(0, 100-(stats['avg_distance']*5))]
+                "Metric": ["Chat", "Sync (TF Part.)", "Macro (Turret)", "Control (CC)"],
+                "Score": [stats['chat_density'], stats['tf_participation'], norm_turret, norm_cc]
             })
             st.bar_chart(chart_data.set_index("Metric"))
             
@@ -390,7 +405,6 @@ if app_mode == "📊 Post-Game Analysis (Pipeline)":
 
         st.markdown("---")
         st.markdown("### ✅ Actionable Steps")
-        # Display the recommendations again in the final report
         for r in diag['recs']:
              if "1." in r or "2." in r or "3." in r:
                  st.info(r)
@@ -408,7 +422,6 @@ if app_mode == "📊 Post-Game Analysis (Pipeline)":
 elif app_mode == "⚔️ Pre-Game Strategy (Drafting)":
     st.title("⚔️ Pre-Game Strategy: Counter Pick System")
     
-    # STAGE 1
     if st.session_state.stage == 1:
         st.header("Stage 1: Opponent Selection")
         tab_pro, tab_man = st.tabs(["🏆 MPL MY Database", "✍️ Manual Input"])
@@ -443,7 +456,6 @@ elif app_mode == "⚔️ Pre-Game Strategy (Drafting)":
                         st.session_state.stage = 2
                         st.rerun()
 
-    # STAGE 2
     elif st.session_state.stage == 2:
         st.header("Stage 2: Draft Analysis")
         data = st.session_state.draft_data
@@ -451,7 +463,6 @@ elif app_mode == "⚔️ Pre-Game Strategy (Drafting)":
         for l, h in data['lanes'].items(): st.error(f"**{l}:** {h}")
         if st.button("Find Counters"): st.session_state.stage = 3; st.rerun()
 
-    # STAGE 3
     elif st.session_state.stage == 3:
         st.header("Stage 3: Lane Counters (Top 3)")
         recs = analyze_lane_matchups(st.session_state.draft_data['lanes'])
@@ -466,7 +477,6 @@ elif app_mode == "⚔️ Pre-Game Strategy (Drafting)":
             else: st.warning(f"No counter for {info['enemy']}")
         if st.button("Build Team"): st.session_state.stage = 4; st.rerun()
 
-    # STAGE 4
     elif st.session_state.stage >= 4:
         st.header("Stage 4: Team Builder")
         team = {l: info['top'][0]['name'] if info['top'] else "Flex" for l, info in st.session_state.recs.items()}
